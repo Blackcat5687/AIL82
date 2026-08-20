@@ -120,8 +120,8 @@ object GraphQueryEngine {
         }
     }
 
-    fun recomputeDerivedState(nodes: List<GraphNode>, state: GraphState) {
-        recomputeFilter(nodes, state.edges, state.filterState)
+    fun recomputeDerivedState(nodes: List<GraphNode>, edges: List<GraphEdge>, state: GraphState) {
+        recomputeFilter(nodes, edges, state.filterState)
         recomputeGroupColors(nodes, state.groupRules)
     }
 }

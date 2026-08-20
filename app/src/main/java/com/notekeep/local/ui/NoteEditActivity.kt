@@ -218,17 +218,23 @@ class NoteEditActivity : AppCompatActivity() {
             val liftBy = (imeHeight - systemBars.bottom).coerceAtLeast(0)
             binding.bottomActionsBar.translationY = -liftBy.toFloat()
 
-            // Reserve exactly the keyboard's own height so nothing sits underneath it - no extra
-            // buffer on top of that. An earlier version added two full lines of extra padding
-            // here "for breathing room", but that padding sat inside the ScrollView's own bottom
-            // edge, so any text past that point was pushed out of the visible/scrollable area
-            // and effectively hidden behind an invisible wall, regardless of how far it was from
-            // the caret. Keeping the active line comfortably above the keyboard is scrollCursorAboveKeyboard's
-            // job, not this padding's.
-            binding.contentScroll.setPadding(
-                binding.contentScroll.paddingLeft, binding.contentScroll.paddingTop,
-                binding.contentScroll.paddingRight, imeHeight
-            )
+            // Reserve the keyboard's height, plus the bar's own height while it's floating above
+            // the keyboard (translationY above only moves the bar visually - it doesn't free up
+            // the space the bar still occupies in the layout, so without this the floated bar
+            // overlapped the last lines of text instead of sitting flush against the keyboard
+            // with the content scrolled clear of it). Zero when the keyboard is closed: the bar
+            // sits in its normal spot in the layout then and needs no extra reservation at all.
+            // Posted so bottomActionsBar.height reflects the padding change just made above
+            // (rather than a stale pre-padding measurement from the previous layout pass) -
+            // otherwise the reserved space could be off by however much the nav-bar inset just
+            // changed the bar's own height by.
+            binding.bottomActionsBar.post {
+                val bottomReserve = if (imeHeight > 0) imeHeight + binding.bottomActionsBar.height else 0
+                binding.contentScroll.setPadding(
+                    binding.contentScroll.paddingLeft, binding.contentScroll.paddingTop,
+                    binding.contentScroll.paddingRight, bottomReserve
+                )
+            }
 
             if (imeHeight != lastImeHeight) {
                 lastImeHeight = imeHeight
@@ -606,7 +612,8 @@ class NoteEditActivity : AppCompatActivity() {
      * close) and autosave (silent, periodic/lifecycle-triggered) so the two can never drift out
      * of sync with what actually gets written. Does nothing for a still-blank, never-saved note -
      * there's nothing worth persisting yet, and it would otherwise litter the list with empty
-     * notes every time the debounce timer fires.
+     * notes every time the debounce timer fires. Also does nothing once the note has been deleted
+     * (see isDeleted below).
      *
      * After the very first insert, currentNote/noteId are updated in place so every later call
      * (autosave or manual save) becomes an update against that same row instead of inserting a
@@ -617,8 +624,17 @@ class NoteEditActivity : AppCompatActivity() {
      */
     private var isPersisting = false
 
+    // Set the instant delete is confirmed, before the delete coroutine even launches - not after
+    // moveToTrash completes. This is what deletion actually needs guarded against: finish() (called
+    // right after moveToTrash) triggers onPause, which fires its own autosave. That autosave builds
+    // its update from currentNote - a copy taken before the delete, so still showing deletedAt as
+    // null - and writing that copy back out silently undid the delete by resetting deletedAt to
+    // null again, whichever of the two coroutines happened to finish last. Checking isDeleted in
+    // persistCurrentState closes that window regardless of ordering.
+    private var isDeleted = false
+
     private suspend fun persistCurrentState() {
-        if (isPersisting) return
+        if (isPersisting || isDeleted) return
         isPersisting = true
         try {
             val title = binding.editTitle.text.toString().trim()
@@ -667,6 +683,7 @@ class NoteEditActivity : AppCompatActivity() {
      * surface a dialog or crash while the user is mid-edit.
      */
     private fun autosave() {
+        if (isDeleted) return
         lifecycleScope.launch {
             try {
                 persistCurrentState()
@@ -695,6 +712,9 @@ class NoteEditActivity : AppCompatActivity() {
             finish()
             return
         }
+        // set before launching anything, and before finish() (which triggers onPause's own
+        // autosave) - see isDeleted's comment on persistCurrentState for why this matters.
+        isDeleted = true
         lifecycleScope.launch {
             AppDatabase.getInstance(applicationContext).noteDao().moveToTrash(id)
             finish()
